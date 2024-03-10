@@ -16,19 +16,24 @@ from wandb import log
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 
-ROOTPATH = Path("../data/cassava")
+from pathlib import Path
+import os
+
+
+DATAPATH = Path("../data/cassava")
+MODELPATH = Path("../models/cassava")
 IMAGE_SIZE = (128, 128)
 MEAN = [0.4766, 0.4527, 0.2936]
 STD = [0.2275, 0.2224, 0.2210]
 BATCH_SIZE = 64
 LR = 1e-3
-EPOCHS = 3
+EPOCHS = 1
 device = 'gpu' if torch.cuda.is_available() else 'cpu'
 
 
 class Data(Dataset):
     def __init__(self, df: pd.DataFrame, transforms = None):
-        self.X = [ROOTPATH / "train_images" / filename for filename in df["image_id"].values]
+        self.X = [DATAPATH / "train_images" / filename for filename in df["image_id"].values]
         self.y = df['label'].values.tolist()
         self.transforms = transforms
 
@@ -69,6 +74,7 @@ class LightningModule(pl.LightningModule):
         self.model = model
         self.lr = lr
         self.loss_fn = loss_fn
+        self.save_hyperparameters()
 
     def common_step(self, batch):
         x, y = batch
@@ -97,8 +103,8 @@ class LightningModule(pl.LightningModule):
         return torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
 # data processing
-df = pd.read_csv(ROOTPATH / "train.csv")
-with open(ROOTPATH / "label_num_to_disease_map.json") as f:
+df = pd.read_csv(DATAPATH / "train.csv").sample(frac=0.2)
+with open(DATAPATH / "label_num_to_disease_map.json") as f:
     label_map = json.load(f)
 label_map = {int(i): v for i, v in label_map.items()}
 train_df, val_df = train_test_split(df, test_size=0.1, random_state=42, stratify=df['label'].values)
@@ -142,14 +148,25 @@ logger.experiment.config.update({"lr": LR, "epochs": EPOCHS, "batchsize": BATCH_
 trainer = pl.Trainer(max_epochs=EPOCHS,
                      logger=logger,
                      gradient_clip_val=1.0,
+                     #limit_train_batches=30,
+                     #limit_val_batches=30,
                      precision=16)
 
 trainer.fit(lightning_model, train_dl, val_dl)
 
+trainer.save_checkpoint(MODELPATH / f"resnet34_epochs{EPOCHS}_LR{LR}_trainer")
+
+
 checkpoint = {
     'model': model.state_dict(),
-    'optimizer': opt.state_dict(),
-    'lr_sched': scheduler.state_dict()
 }
-torch.save(checkpoint, ROOTPATH / "models" / "cassava" / f"resnet34_epoch{EPOCHS}")
+torch.save(checkpoint, MODELPATH / f"resnet34_epochs{EPOCHS}_LR{LR}_model")
+
+
+model_light = lightning_model.load_from_checkpoint(MODELPATH / f"resnet34_epochs{EPOCHS}_LR{LR}_trainer")
+model = Model(num_classes=df['label'].nunique())
+state_dict = torch.load(MODELPATH / f"resnet34_epochs{EPOCHS}_LR{LR}_model")
+model.load_state_dict(state_dict['model'])
+
+
 print("finished")
